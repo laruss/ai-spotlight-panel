@@ -173,6 +173,16 @@ Download the latest release from the [Releases](../../releases) page.
 
 ## Troubleshooting
 
+### "App is damaged and can't be opened"
+
+This happens because the app is not signed with an Apple Developer certificate. To fix:
+
+```bash
+xattr -cr /Applications/ai-spotlight-panel.app
+```
+
+Then open the app again.
+
 ### Ollama Connection Issues
 
 Make sure Ollama is running:
