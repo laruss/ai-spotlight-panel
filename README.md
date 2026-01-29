@@ -5,8 +5,7 @@ global hotkey to get instant AI-powered answers and translations.
 
 ## Features
 
-- **Global Hotkey**: Press `Option+Space` (macOS) or `Alt+Space` (Windows/Linux) to toggle the spotlight panel from
-  anywhere
+- **Global Hotkey**: Press `Option+Space` to toggle the spotlight panel from anywhere
 - **AI Quick Answers**: Get instant responses powered by local Ollama models with web search capabilities
 - **Real-time Translation**: Automatically detects and translates non-English text to English using Google Translate
 - **Thinking Mode**: Optional chain-of-thought reasoning for more thorough responses
@@ -82,7 +81,7 @@ This will:
 
 1. **Launch the app** - After starting, the app runs in the system tray (no dock icon)
 
-2. **Toggle Spotlight** - Press `Option+Space` (macOS) or `Alt+Space` (Windows/Linux)
+2. **Toggle Spotlight** - Press `Option+Space`
 
 3. **Search or Ask** - Type your query:
     - Questions get AI-powered answers with web search
@@ -150,11 +149,10 @@ ai-spotlight-panel/
 bun run tauri build
 ```
 
-This creates platform-specific bundles in `src-tauri/target/release/bundle/`:
+This creates bundles in `src-tauri/target/release/bundle/`:
 
-- macOS: `.app` and `.dmg`
-- Windows: `.exe` and `.msi`
-- Linux: `.AppImage` and `.deb`
+- `.app` - Application bundle
+- `.dmg` - Disk image for distribution
 
 ## Releases
 
@@ -162,16 +160,14 @@ Pre-built binaries are automatically created when the version is updated. To tri
 
 1. Update the version in the `VERSION` file in the project root
 2. Commit and push to the `main` branch
-3. GitHub Actions will automatically build for all platforms and create a release
+3. GitHub Actions will automatically build and create a release
 
 ### Supported Platforms
 
-| Platform | Architecture | Artifacts |
-|----------|--------------|-----------|
-| macOS | ARM64 (Apple Silicon) | `.dmg`, `.app` |
-| macOS | x64 (Intel) | `.dmg`, `.app` |
-| Linux | x64 | `.deb`, `.AppImage` |
-| Windows | x64 | `.msi`, `.exe` |
+| Platform | Architecture          | Artifacts |
+|----------|-----------------------|-----------|
+| macOS    | ARM64 (Apple Silicon) | `.dmg`    |
+| macOS    | x64 (Intel)           | `.dmg`    |
 
 Download the latest release from the [Releases](../../releases) page.
 
