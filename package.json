@@ -13,7 +13,8 @@
 		"format": "bunx biome format",
 		"check": "bunx biome check",
 		"fix": "bun run lint --fix && bun run format --fix && bun run typecheck",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"bump": "bun run scripts/bump-version.ts"
 	},
 	"dependencies": {
 		"@radix-ui/react-label": "^2.1.8",

@@ -24,7 +24,7 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+        run: echo "version=$(grep -v '^#' VERSION | head -1)" >> $GITHUB_OUTPUT
 
       - name: Check if VERSION changed
         id: check
