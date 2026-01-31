@@ -141,11 +141,24 @@ fn get_web_search_tool() -> Tool {
 }
 
 // Execute web search using the configured search API
-async fn execute_web_search(query: &str) -> Result<String, String> {
-	let api_url = std::env::var("SEARCH_API_URL")
-		.unwrap_or_else(|_| "https://search.mobb.space/search".to_string());
-	let api_key = std::env::var("SEARCH_API_KEY")
-		.map_err(|_| "SEARCH_API_KEY not configured in environment")?;
+async fn execute_web_search(
+	query: &str,
+	api_url: &str,
+	api_key: &str,
+) -> Result<String, String> {
+	let api_url = api_url.trim();
+	log::info!(
+		"[quick_answer] execute_web_search received url_len={}, has_key={}",
+		api_url.len(),
+		!api_key.trim().is_empty()
+	);
+	if api_url.is_empty() {
+		return Err("Search API URL not configured in Options".to_string());
+	}
+	let api_key = api_key.trim();
+	if api_key.is_empty() {
+		return Err("Search API key not configured in Options".to_string());
+	}
 
 	let client = reqwest::Client::new();
 	let response = client
@@ -169,13 +182,27 @@ async fn execute_web_search(query: &str) -> Result<String, String> {
 
 // Command for quick, non-streaming AI response with tool calling support
 #[tauri::command]
-async fn quick_answer(text: String, model: String, enable_thinking: bool) -> Result<String, String> {
+async fn quick_answer(
+	text: String,
+	model: String,
+	enable_thinking: bool,
+	web_search_api_url: Option<String>,
+	web_search_api_key: Option<String>,
+) -> Result<String, String> {
 	log::info!("[quick_answer] Called with model={}, enable_thinking={}", model, enable_thinking);
-	
+
 	if text.trim().is_empty() {
 		log::warn!("[quick_answer] Empty text provided");
 		return Err("Empty text".to_string());
 	}
+
+	let search_api_url = web_search_api_url.unwrap_or_default();
+	let search_api_key = web_search_api_key.unwrap_or_default();
+	log::info!(
+		"[quick_answer] Received web search settings url_len={}, has_key={}",
+		search_api_url.trim().len(),
+		!search_api_key.trim().is_empty()
+	);
 
 	let client = reqwest::Client::new();
 	let tools = vec![get_web_search_tool()];
@@ -184,7 +211,7 @@ async fn quick_answer(text: String, model: String, enable_thinking: bool) -> Res
 	// For Qwen3 and similar models, add /no_think or /think suffix to control thinking mode
 	let thinking_suffix = if enable_thinking { " /think" } else { " /no_think" };
 	let user_content = format!("{}{}", text, thinking_suffix);
-	
+
 	let system_msg = serde_json::json!({
 		"role": "system",
 		"content": QUICK_ANSWER_SYSTEM_PROMPT
@@ -246,11 +273,16 @@ async fn quick_answer(text: String, model: String, enable_thinking: bool) -> Res
 							.unwrap_or("");
 
 						if !query.is_empty() {
-							match execute_web_search(query).await {
+							log::info!(
+								"[quick_answer] Executing web_search with query=\"{}\"",
+								query
+							);
+							match execute_web_search(query, &search_api_url, &search_api_key).await {
 								Ok(result) => {
 									tool_results.push((tool_call.function.name.clone(), result));
 								}
 								Err(e) => {
+									log::warn!("[quick_answer] web_search failed: {}", e);
 									tool_results.push((tool_call.function.name.clone(), format!("Search failed: {}", e)));
 								}
 							}
@@ -413,6 +445,21 @@ fn greet(name: &str) -> String {
 	format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn log_settings_update(values: serde_json::Value) -> Result<(), String> {
+	let mut safe_values = values;
+	if let Some(obj) = safe_values.as_object_mut() {
+		if obj.contains_key("webSearchApiKey") {
+			obj.insert(
+				"webSearchApiKey".to_string(),
+				serde_json::Value::String("[redacted]".to_string()),
+			);
+		}
+	}
+	log::info!("[settings] Updated values: {}", safe_values);
+	Ok(())
+}
+
 // Translation result structure
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TranslationResult {
@@ -420,14 +467,12 @@ pub struct TranslationResult {
 	pub detected_language: String,
 }
 
-// Command to translate text using Google Translate
-#[tauri::command]
-async fn translate_text(text: String) -> Result<TranslationResult, String> {
-	if text.trim().is_empty() {
-		return Err("Empty text".to_string());
-	}
-
-	let client = reqwest::Client::new();
+async fn translate_with_target(
+	client: &reqwest::Client,
+	text: &str,
+	target_language: &str,
+) -> Result<TranslationResult, String> {
+	let target_language = target_language.trim();
 
 	// Use the batch translate endpoint (more reliable, less rate-limited)
 	let rpcids = "MkEWBc";
@@ -445,7 +490,7 @@ async fn translate_text(text: String) -> Result<TranslationResult, String> {
 
 	// Build the request body
 	// Format: [[["MkEWBc","[[\"text\",\"auto\",\"en\",true],[null]]",null,"1"]]]
-	let freq_inner = serde_json::json!([[&text, "auto", "en", true], [null]]);
+	let freq_inner = serde_json::json!([[text, "auto", target_language, true], [null]]);
 	let freq = serde_json::json!([[[rpcids, freq_inner.to_string(), null, "0"]]]);
 	let body = format!("f.req={}&", urlencoding::encode(&freq.to_string()));
 
@@ -511,17 +556,11 @@ async fn translate_text(text: String) -> Result<TranslationResult, String> {
 											// Get detected language
 											let detected_lang = data
 												.get(1)
-												.and_then(|v| v.get(0))
-												.and_then(|v| v.get(0))
-												.and_then(|v| v.get(1))
+												.and_then(|v| v.get(3))
 												.and_then(|v| v.as_str())
+												.or_else(|| data.get(2).and_then(|v| v.as_str()))
 												.unwrap_or("auto")
 												.to_string();
-
-											// If detected language is English, return error to signal no translation needed
-											if detected_lang == "en" {
-												return Err("Source is English".to_string());
-											}
 
 											return Ok(TranslationResult {
 												text: translated_text,
@@ -539,6 +578,39 @@ async fn translate_text(text: String) -> Result<TranslationResult, String> {
 	}
 
 	Err("Could not parse translation from response".to_string())
+}
+
+// Command to translate text using Google Translate
+#[tauri::command]
+async fn translate_text(
+	text: String,
+	target_language: Option<String>,
+) -> Result<TranslationResult, String> {
+	if text.trim().is_empty() {
+		return Err("Empty text".to_string());
+	}
+
+	let client = reqwest::Client::new();
+	let second_language = target_language.unwrap_or_default();
+	let trimmed_language = second_language.trim();
+
+	if trimmed_language.is_empty() || trimmed_language == "en" {
+		let english_result = translate_with_target(&client, &text, "en").await?;
+		if english_result.detected_language == "en" {
+			return Err("Source is English".to_string());
+		}
+		return Ok(english_result);
+	}
+
+	let second_language_result =
+		translate_with_target(&client, &text, trimmed_language).await?;
+
+	if second_language_result.detected_language == "en" {
+		return Ok(second_language_result);
+	}
+
+	let english_result = translate_with_target(&client, &text, "en").await?;
+	Ok(english_result)
 }
 
 // Command to show a toast notification in a separate window
@@ -761,7 +833,7 @@ pub fn run() {
 							if let Ok(window) =
 								WebviewWindowBuilder::new(app, "options", options_url)
 									.title("Options")
-									.inner_size(450.0, 420.0)
+									.inner_size(560.0, 620.0)
 									.resizable(false)
 									.center()
 									.build()
@@ -835,7 +907,15 @@ pub fn run() {
 			}
 			Ok(())
 		})
-		.invoke_handler(tauri::generate_handler![greet, list_models, chat_stream, quick_answer, show_toast, translate_text])
+	.invoke_handler(tauri::generate_handler![
+		greet,
+		list_models,
+		chat_stream,
+		quick_answer,
+		show_toast,
+		translate_text,
+		log_settings_update
+	])
 		.run(tauri::generate_context!())
 		.expect("error while running tauri application");
 }

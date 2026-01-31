@@ -7,7 +7,8 @@ global hotkey to get instant AI-powered answers and translations.
 
 - **Global Hotkey**: Press `Option+Space` to toggle the spotlight panel from anywhere
 - **AI Quick Answers**: Get instant responses powered by local Ollama models with web search capabilities
-- **Real-time Translation**: Automatically detects and translates non-English text to English using Google Translate
+- **Real-time Translation**: Automatically detects and translates non-English text to English, with optional
+  English-to-second-language output
 - **Thinking Mode**: Optional chain-of-thought reasoning for more thorough responses
 - **Native Experience**: Transparent, frameless window that appears above all other windows
 - **System Tray**: Runs quietly in the background with easy access to options
@@ -35,15 +36,7 @@ The spotlight panel appears as a floating search bar that can be summoned from a
    bun install
    ```
 
-3. Set up environment variables:
-   ```bash
-   cp .env.example .env
-   ```
-
-   Edit `.env` and configure:
-    - `SEARCH_API_KEY` - API key for web search functionality
-
-4. Install an Ollama model:
+3. Install an Ollama model:
    ```bash
    ollama pull qwen3:30b
    # Or any other model you prefer
@@ -93,6 +86,8 @@ This will:
     - Choose your Ollama model
     - Toggle thinking mode
     - Refresh available models
+    - Configure the web search API URL and key
+    - Set the translation second language (optional)
 
 ## Architecture
 
@@ -133,15 +128,16 @@ ai-spotlight-panel/
 
 ### Environment Variables
 
-| Variable         | Description             | Default                            |
-|------------------|-------------------------|------------------------------------|
-| `SEARCH_API_URL` | Web search API endpoint | `https://search.mobb.space/search` |
-| `SEARCH_API_KEY` | API key for web search  | Required                           |
+No runtime environment variables are required. Web search settings are configured
+in the Options window and stored locally.
 
 ### Settings (via Options window)
 
 - **Ollama Model**: Select from available local models
 - **Enable Thinking**: Toggle chain-of-thought reasoning mode
+- **Web Search API URL**: Base endpoint used for web search
+- **Web Search API Key**: Stored locally for authenticated search requests
+- **Translation Second Language**: Translate English input to a selected language
 
 ## Building for Production
 

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSettingsReader } from "./useSettings";
+import { getSettingsSnapshot, useSettingsReader } from "./useSettings";
 
 interface UseQuickAnswerReturn {
 	answer: string | null;
@@ -19,15 +19,24 @@ export function useQuickAnswer(
 	const {
 		ollamaModel,
 		enableThinking,
+		webSearchApiUrl,
+		webSearchApiKey,
 		isLoading: settingsLoading,
 	} = useSettingsReader();
 
 	const getQuickAnswer = useCallback(
-		async (inputText: string, model: string, think: boolean) => {
+		async (
+			inputText: string,
+			model: string,
+			think: boolean,
+			searchApiUrl: string,
+			searchApiKey: string,
+		) => {
 			console.log("[useQuickAnswer] getQuickAnswer called with:", {
 				model,
 				think,
 				textLength: inputText.length,
+				hasWebSearchApiKey: Boolean(searchApiKey),
 			});
 
 			// Skip if no model is configured
@@ -52,14 +61,24 @@ export function useQuickAnswer(
 			setError(null);
 
 			try {
+				const latestSettings = await getSettingsSnapshot();
+				const effectiveModel = latestSettings.ollamaModel || model;
+				const effectiveThinking = latestSettings.enableThinking;
+				const effectiveSearchApiUrl =
+					latestSettings.webSearchApiUrl || searchApiUrl;
+				const effectiveSearchApiKey =
+					latestSettings.webSearchApiKey || searchApiKey;
+
 				console.log(
 					"[useQuickAnswer] Invoking quick_answer with enableThinking:",
-					think,
+					effectiveThinking,
 				);
 				const result = await invoke<string>("quick_answer", {
 					text: inputText,
-					model: model,
-					enableThinking: think,
+					model: effectiveModel,
+					enableThinking: effectiveThinking,
+					webSearchApiUrl: effectiveSearchApiUrl,
+					webSearchApiKey: effectiveSearchApiKey,
 				});
 
 				if (abortRef.current) return;
@@ -97,7 +116,13 @@ export function useQuickAnswer(
 		}
 
 		const timeoutId = setTimeout(() => {
-			getQuickAnswer(text, ollamaModel, enableThinking);
+			getQuickAnswer(
+				text,
+				ollamaModel,
+				enableThinking,
+				webSearchApiUrl,
+				webSearchApiKey,
+			);
 		}, debounceMs);
 
 		return () => {
@@ -110,6 +135,8 @@ export function useQuickAnswer(
 		getQuickAnswer,
 		ollamaModel,
 		enableThinking,
+		webSearchApiUrl,
+		webSearchApiKey,
 		settingsLoading,
 	]);
 

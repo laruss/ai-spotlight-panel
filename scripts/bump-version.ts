@@ -7,7 +7,7 @@ type BumpType = "major" | "minor" | "patch";
 
 function parseVersion(version: string): [number, number, number] {
 	const parts = version.split(".").map(Number);
-	if (parts.length !== 3 || parts.some(isNaN)) {
+	if (parts.length !== 3 || parts.some(Number.isNaN)) {
 		throw new Error(`Invalid version format: ${version}`);
 	}
 	return parts as [number, number, number];

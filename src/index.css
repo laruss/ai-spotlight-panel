@@ -364,10 +364,12 @@
 		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
 		sans-serif;
 	position: relative;
+	overflow: auto;
 }
 
 .options-content {
 	padding: 24px;
+	position: relative;
 }
 
 .options-title {
@@ -385,6 +387,10 @@
 	border: 1px solid oklch(1 0 0 / 8%);
 }
 
+.options-section + .options-section {
+	margin-top: 16px;
+}
+
 .options-section-title {
 	font-size: 14px;
 	font-weight: 500;
@@ -400,10 +406,63 @@
 	gap: 8px;
 }
 
+.options-field + .options-field {
+	margin-top: 16px;
+}
+
 .options-field-row {
 	display: flex;
 	gap: 8px;
 	align-items: center;
+}
+
+.options-input {
+	width: 100%;
+	height: 36px;
+	padding: 0 12px;
+	border-radius: 8px;
+	border: 1px solid oklch(1 0 0 / 12%);
+	background: oklch(0.15 0 0);
+	color: oklch(0.95 0 0);
+	font-size: 14px;
+}
+
+.options-input::placeholder {
+	color: oklch(0.6 0 0);
+}
+
+.options-input:focus {
+	outline: none;
+	border-color: oklch(0.6 0.18 145);
+	box-shadow: 0 0 0 2px oklch(0.6 0.18 145 / 20%);
+}
+
+.options-combobox {
+	background: oklch(0.15 0 0);
+	border-color: oklch(1 0 0 / 12%);
+}
+
+.options-combobox [data-slot="input-group-control"] {
+	color: oklch(0.95 0 0);
+}
+
+.options-combobox [data-slot="input-group-control"]::placeholder {
+	color: oklch(0.6 0 0);
+}
+
+.options-combobox-content {
+	background: oklch(0.16 0 0);
+	border: 1px solid oklch(1 0 0 / 12%);
+	color: oklch(0.95 0 0);
+}
+
+.options-combobox-content [data-slot="combobox-item"][data-highlighted] {
+	background: oklch(0.28 0 0);
+	color: oklch(0.98 0 0);
+}
+
+.options-combobox-content [data-slot="combobox-empty"] {
+	color: oklch(0.6 0 0);
 }
 
 .options-select {
@@ -433,6 +492,10 @@
 	margin: 4px 0 0 0;
 }
 
+.options-section-hint {
+	margin-bottom: 12px;
+}
+
 .options-warning {
 	font-size: 13px;
 	color: oklch(0.65 0.2 25);
@@ -441,7 +504,7 @@
 
 /* Options Toast */
 .options-toast {
-	position: absolute;
+	position: fixed;
 	top: 16px;
 	left: 50%;
 	transform: translateX(-50%) translateY(-60px);
