@@ -62,6 +62,11 @@ export function useTranslation(
 				if (abortRef.current) return;
 
 				const errorMessage = err instanceof Error ? err.message : String(err);
+				if (errorMessage === "Cancelled") {
+					setTranslation(null);
+					setError(null);
+					return;
+				}
 
 				// "Source is English" is not really an error, just means no translation needed
 				if (errorMessage.includes("Source is English")) {
@@ -93,6 +98,10 @@ export function useTranslation(
 		return () => {
 			clearTimeout(timeoutId);
 			abortRef.current = true;
+			setTranslation(null);
+			setIsLoading(false);
+			setError(null);
+			void invoke("cancel_translate_text").catch(() => {});
 		};
 	}, [
 		text,

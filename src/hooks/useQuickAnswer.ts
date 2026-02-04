@@ -10,7 +10,7 @@ interface UseQuickAnswerReturn {
 
 export function useQuickAnswer(
 	text: string,
-	debounceMs = 500,
+	debounceMs = 1000,
 ): UseQuickAnswerReturn {
 	const [answer, setAnswer] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(false);
@@ -89,6 +89,11 @@ export function useQuickAnswer(
 				if (abortRef.current) return;
 
 				const errorMessage = err instanceof Error ? err.message : String(err);
+				if (errorMessage === "Cancelled") {
+					setAnswer(null);
+					setError(null);
+					return;
+				}
 				console.error("Quick answer error:", errorMessage);
 				setError(errorMessage);
 				setAnswer(null);
@@ -128,6 +133,10 @@ export function useQuickAnswer(
 		return () => {
 			clearTimeout(timeoutId);
 			abortRef.current = true;
+			setAnswer(null);
+			setIsLoading(false);
+			setError(null);
+			void invoke("cancel_quick_answer").catch(() => {});
 		};
 	}, [
 		text,

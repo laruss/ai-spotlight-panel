@@ -1,10 +1,85 @@
+use futures_util::future::{AbortHandle, Abortable, AbortRegistration};
 use serde::{Deserialize, Serialize};
+use std::sync::{
+	atomic::{AtomicU64, Ordering},
+	Mutex,
+};
 use std::time::Duration;
 use tauri::{
 	menu::{Menu, MenuItem},
 	tray::TrayIconBuilder,
 	Emitter, Manager, WebviewWindowBuilder,
 };
+
+struct RequestSlot {
+	id: u64,
+	handle: AbortHandle,
+}
+
+#[derive(Default)]
+struct RequestAbortState {
+	counter: AtomicU64,
+	quick_answer: Mutex<Option<RequestSlot>>,
+	translation: Mutex<Option<RequestSlot>>,
+}
+
+impl RequestAbortState {
+	fn next_id(&self) -> u64 {
+		self.counter.fetch_add(1, Ordering::Relaxed) + 1
+	}
+
+	fn start_request(&self, slot: &Mutex<Option<RequestSlot>>) -> (u64, AbortRegistration) {
+		let (handle, registration) = AbortHandle::new_pair();
+		let id = self.next_id();
+		let mut guard = slot.lock().expect("request abort mutex poisoned");
+		if let Some(prev) = guard.take() {
+			prev.handle.abort();
+		}
+		*guard = Some(RequestSlot { id, handle });
+		(id, registration)
+	}
+
+	fn finish_request(&self, slot: &Mutex<Option<RequestSlot>>, id: u64) {
+		let mut guard = slot.lock().expect("request abort mutex poisoned");
+		if let Some(current) = guard.as_ref() {
+			if current.id == id {
+				guard.take();
+			}
+		}
+	}
+
+	fn cancel_request(&self, slot: &Mutex<Option<RequestSlot>>) -> Option<u64> {
+		let mut guard = slot.lock().expect("request abort mutex poisoned");
+		guard.take().map(|prev| {
+			prev.handle.abort();
+			prev.id
+		})
+	}
+
+	fn start_quick_answer(&self) -> (u64, AbortRegistration) {
+		self.start_request(&self.quick_answer)
+	}
+
+	fn finish_quick_answer(&self, id: u64) {
+		self.finish_request(&self.quick_answer, id);
+	}
+
+	fn cancel_quick_answer(&self) -> Option<u64> {
+		self.cancel_request(&self.quick_answer)
+	}
+
+	fn start_translation(&self) -> (u64, AbortRegistration) {
+		self.start_request(&self.translation)
+	}
+
+	fn finish_translation(&self, id: u64) {
+		self.finish_request(&self.translation, id);
+	}
+
+	fn cancel_translation(&self) -> Option<u64> {
+		self.cancel_request(&self.translation)
+	}
+}
 
 // Data structures for Ollama API
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -188,171 +263,204 @@ async fn quick_answer(
 	enable_thinking: bool,
 	web_search_api_url: Option<String>,
 	web_search_api_key: Option<String>,
+	state: tauri::State<'_, RequestAbortState>,
 ) -> Result<String, String> {
-	log::info!("[quick_answer] Called with model={}, enable_thinking={}", model, enable_thinking);
+	let (request_id, abort_registration) = state.start_quick_answer();
+	log::info!("[quick_answer][id={}] started", request_id);
+	let request_future = async move {
+		log::info!("[quick_answer] Called with model={}, enable_thinking={}", model, enable_thinking);
 
-	if text.trim().is_empty() {
-		log::warn!("[quick_answer] Empty text provided");
-		return Err("Empty text".to_string());
-	}
+		if text.trim().is_empty() {
+			log::warn!("[quick_answer] Empty text provided");
+			return Err("Empty text".to_string());
+		}
 
-	let search_api_url = web_search_api_url.unwrap_or_default();
-	let search_api_key = web_search_api_key.unwrap_or_default();
-	log::info!(
-		"[quick_answer] Received web search settings url_len={}, has_key={}",
-		search_api_url.trim().len(),
-		!search_api_key.trim().is_empty()
-	);
+		let search_api_url = web_search_api_url.unwrap_or_default();
+		let search_api_key = web_search_api_key.unwrap_or_default();
+		log::info!(
+			"[quick_answer] Received web search settings url_len={}, has_key={}",
+			search_api_url.trim().len(),
+			!search_api_key.trim().is_empty()
+		);
 
-	let client = reqwest::Client::new();
-	let tools = vec![get_web_search_tool()];
+		let client = reqwest::Client::new();
+		let tools = vec![get_web_search_tool()];
 
-	// Build initial messages
-	// For Qwen3 and similar models, add /no_think or /think suffix to control thinking mode
-	let thinking_suffix = if enable_thinking { " /think" } else { " /no_think" };
-	let user_content = format!("{}{}", text, thinking_suffix);
+		// Build initial messages
+		// For Qwen3 and similar models, add /no_think or /think suffix to control thinking mode
+		let thinking_suffix = if enable_thinking { " /think" } else { " /no_think" };
+		let user_content = format!("{}{}", text, thinking_suffix);
 
-	let system_msg = serde_json::json!({
-		"role": "system",
-		"content": QUICK_ANSWER_SYSTEM_PROMPT
-	});
-	let user_msg = serde_json::json!({
-		"role": "user",
-		"content": user_content
-	});
-	let mut messages = vec![system_msg, user_msg];
+		let system_msg = serde_json::json!({
+			"role": "system",
+			"content": QUICK_ANSWER_SYSTEM_PROMPT
+		});
+		let user_msg = serde_json::json!({
+			"role": "user",
+			"content": user_content
+		});
+		let mut messages = vec![system_msg, user_msg];
 
-	// First request with tools
-	let request_body = ChatRequestWithTools {
-		model: model.clone(),
-		messages: serde_json::Value::Array(messages.clone()),
-		stream: false,
-		tools: Some(tools.clone()),
-		think: enable_thinking,
-	};
+		// First request with tools
+		let request_body = ChatRequestWithTools {
+			model: model.clone(),
+			messages: serde_json::Value::Array(messages.clone()),
+			stream: false,
+			tools: Some(tools.clone()),
+			think: enable_thinking,
+		};
 
-	let json_body = serde_json::to_string(&request_body)
-		.map_err(|e| format!("Failed to serialize request: {}", e))?;
+		let json_body = serde_json::to_string(&request_body)
+			.map_err(|e| format!("Failed to serialize request: {}", e))?;
 
-	log::info!("[quick_answer] Sending request to Ollama with think={}", enable_thinking);
-	log::info!("[quick_answer] Full request body: {}", json_body);
+		log::info!("[quick_answer] Sending request to Ollama with think={}", enable_thinking);
+		log::info!("[quick_answer] Full request body: {}", json_body);
 
-	let response = client
-		.post("http://127.0.0.1:11434/api/chat")
-		.header("Content-Type", "application/json")
-		.body(json_body)
-		.send()
-		.await
-		.map_err(|e| format!("Failed to connect to Ollama: {}. Make sure Ollama is running.", e))?;
+		let response = client
+			.post("http://127.0.0.1:11434/api/chat")
+			.header("Content-Type", "application/json")
+			.body(json_body)
+			.send()
+			.await
+			.map_err(|e| {
+				format!(
+					"Failed to connect to Ollama: {}. Make sure Ollama is running.",
+					e
+				)
+			})?;
 
-	if !response.status().is_success() {
-		return Err(format!("Ollama API error: {}", response.status()));
-	}
+		if !response.status().is_success() {
+			return Err(format!("Ollama API error: {}", response.status()));
+		}
 
-	let body_bytes = response
-		.bytes()
-		.await
-		.map_err(|e| format!("Failed to read response: {}", e))?;
+		let body_bytes = response
+			.bytes()
+			.await
+			.map_err(|e| format!("Failed to read response: {}", e))?;
 
-	let chat_response: ChatResponse = serde_json::from_slice(&body_bytes)
-		.map_err(|e| format!("Failed to parse response: {}", e))?;
+		let chat_response: ChatResponse = serde_json::from_slice(&body_bytes)
+			.map_err(|e| format!("Failed to parse response: {}", e))?;
 
-	// Check if the model wants to call tools
-	if let Some(ref message) = chat_response.message {
-		if let Some(ref tool_calls) = message.tool_calls {
-			if !tool_calls.is_empty() {
-				// Process tool calls
-				let mut tool_results = Vec::new();
+		// Check if the model wants to call tools
+		if let Some(ref message) = chat_response.message {
+			if let Some(ref tool_calls) = message.tool_calls {
+				if !tool_calls.is_empty() {
+					// Process tool calls
+					let mut tool_results = Vec::new();
 
-				for tool_call in tool_calls {
-					if tool_call.function.name == "web_search" {
-						// Extract the query from arguments
-						let query = tool_call.function.arguments
-							.get("query")
-							.and_then(|v| v.as_str())
-							.unwrap_or("");
+					for tool_call in tool_calls {
+						if tool_call.function.name == "web_search" {
+							// Extract the query from arguments
+							let query = tool_call
+								.function
+								.arguments
+								.get("query")
+								.and_then(|v| v.as_str())
+								.unwrap_or("");
 
-						if !query.is_empty() {
-							log::info!(
-								"[quick_answer] Executing web_search with query=\"{}\"",
-								query
-							);
-							match execute_web_search(query, &search_api_url, &search_api_key).await {
-								Ok(result) => {
-									tool_results.push((tool_call.function.name.clone(), result));
-								}
-								Err(e) => {
-									log::warn!("[quick_answer] web_search failed: {}", e);
-									tool_results.push((tool_call.function.name.clone(), format!("Search failed: {}", e)));
+							if !query.is_empty() {
+								log::info!(
+									"[quick_answer] Executing web_search with query=\"{}\"",
+									query
+								);
+								match execute_web_search(query, &search_api_url, &search_api_key)
+									.await
+								{
+									Ok(result) => {
+										tool_results
+											.push((tool_call.function.name.clone(), result));
+									}
+									Err(e) => {
+										log::warn!("[quick_answer] web_search failed: {}", e);
+										tool_results.push((
+											tool_call.function.name.clone(),
+											format!("Search failed: {}", e),
+										));
+									}
 								}
 							}
 						}
 					}
-				}
 
-				// Add assistant message with tool calls to conversation
-				let assistant_msg = serde_json::json!({
-					"role": "assistant",
-					"content": message.content.clone(),
-					"tool_calls": message.tool_calls
-				});
-				messages.push(assistant_msg);
-
-				// Add tool results to conversation
-				for (tool_name, result) in tool_results {
-					let tool_msg = serde_json::json!({
-						"role": "tool",
-						"tool_name": tool_name,
-						"content": result
+					// Add assistant message with tool calls to conversation
+					let assistant_msg = serde_json::json!({
+						"role": "assistant",
+						"content": message.content.clone(),
+						"tool_calls": message.tool_calls
 					});
-					messages.push(tool_msg);
+					messages.push(assistant_msg);
+
+					// Add tool results to conversation
+					for (tool_name, result) in tool_results {
+						let tool_msg = serde_json::json!({
+							"role": "tool",
+							"tool_name": tool_name,
+							"content": result
+						});
+						messages.push(tool_msg);
+					}
+
+					// Make second request with tool results
+					let follow_up_request = ChatRequestWithTools {
+						model: model.clone(),
+						messages: serde_json::Value::Array(messages),
+						stream: false,
+						tools: Some(tools),
+						think: enable_thinking,
+					};
+
+					let json_body = serde_json::to_string(&follow_up_request)
+						.map_err(|e| format!("Failed to serialize follow-up request: {}", e))?;
+
+					let response = client
+						.post("http://127.0.0.1:11434/api/chat")
+						.header("Content-Type", "application/json")
+						.body(json_body)
+						.send()
+						.await
+						.map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+
+					if !response.status().is_success() {
+						return Err(format!("Ollama API error: {}", response.status()));
+					}
+
+					let body_bytes = response
+						.bytes()
+						.await
+						.map_err(|e| format!("Failed to read follow-up response: {}", e))?;
+
+					let final_response: ChatResponse = serde_json::from_slice(&body_bytes)
+						.map_err(|e| format!("Failed to parse follow-up response: {}", e))?;
+
+					return final_response
+						.message
+						.map(|m| m.content)
+						.ok_or_else(|| "No response from model".to_string());
 				}
-
-				// Make second request with tool results
-				let follow_up_request = ChatRequestWithTools {
-					model: model.clone(),
-					messages: serde_json::Value::Array(messages),
-					stream: false,
-					tools: Some(tools),
-					think: enable_thinking,
-				};
-
-				let json_body = serde_json::to_string(&follow_up_request)
-					.map_err(|e| format!("Failed to serialize follow-up request: {}", e))?;
-
-				let response = client
-					.post("http://127.0.0.1:11434/api/chat")
-					.header("Content-Type", "application/json")
-					.body(json_body)
-					.send()
-					.await
-					.map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
-
-				if !response.status().is_success() {
-					return Err(format!("Ollama API error: {}", response.status()));
-				}
-
-				let body_bytes = response
-					.bytes()
-					.await
-					.map_err(|e| format!("Failed to read follow-up response: {}", e))?;
-
-				let final_response: ChatResponse = serde_json::from_slice(&body_bytes)
-					.map_err(|e| format!("Failed to parse follow-up response: {}", e))?;
-
-				return final_response
-					.message
-					.map(|m| m.content)
-					.ok_or_else(|| "No response from model".to_string());
 			}
 		}
-	}
-
 	// No tool calls, return direct response
 	chat_response
 		.message
 		.map(|m| m.content)
 		.ok_or_else(|| "No response from model".to_string())
+	};
+
+	match Abortable::new(request_future, abort_registration).await {
+		Ok(result) => {
+			state.finish_quick_answer(request_id);
+			match &result {
+				Ok(_) => log::info!("[quick_answer][id={}] ended ok", request_id),
+				Err(err) => log::info!("[quick_answer][id={}] ended error: {}", request_id, err),
+			}
+			result
+		}
+		Err(_) => {
+			state.finish_quick_answer(request_id);
+			log::info!("[quick_answer][id={}] canceled", request_id);
+			Err("Cancelled".to_string())
+		}
+	}
 }
 
 // Command to stream chat responses from Ollama
@@ -585,32 +693,69 @@ async fn translate_with_target(
 async fn translate_text(
 	text: String,
 	target_language: Option<String>,
+	state: tauri::State<'_, RequestAbortState>,
 ) -> Result<TranslationResult, String> {
-	if text.trim().is_empty() {
-		return Err("Empty text".to_string());
-	}
-
-	let client = reqwest::Client::new();
-	let second_language = target_language.unwrap_or_default();
-	let trimmed_language = second_language.trim();
-
-	if trimmed_language.is_empty() || trimmed_language == "en" {
-		let english_result = translate_with_target(&client, &text, "en").await?;
-		if english_result.detected_language == "en" {
-			return Err("Source is English".to_string());
+	let (request_id, abort_registration) = state.start_translation();
+	log::info!("[translate_text][id={}] started", request_id);
+	let request_future = async move {
+		if text.trim().is_empty() {
+			return Err("Empty text".to_string());
 		}
-		return Ok(english_result);
+
+		let client = reqwest::Client::new();
+		let second_language = target_language.unwrap_or_default();
+		let trimmed_language = second_language.trim();
+
+		if trimmed_language.is_empty() || trimmed_language == "en" {
+			let english_result = translate_with_target(&client, &text, "en").await?;
+			if english_result.detected_language == "en" {
+				return Err("Source is English".to_string());
+			}
+			return Ok(english_result);
+		}
+
+		let second_language_result =
+			translate_with_target(&client, &text, trimmed_language).await?;
+
+		if second_language_result.detected_language == "en" {
+			return Ok(second_language_result);
+		}
+
+		let english_result = translate_with_target(&client, &text, "en").await?;
+		Ok(english_result)
+	};
+
+	match Abortable::new(request_future, abort_registration).await {
+		Ok(result) => {
+			state.finish_translation(request_id);
+			match &result {
+				Ok(_) => log::info!("[translate_text][id={}] ended ok", request_id),
+				Err(err) => log::info!("[translate_text][id={}] ended error: {}", request_id, err),
+			}
+			result
+		}
+		Err(_) => {
+			state.finish_translation(request_id);
+			log::info!("[translate_text][id={}] canceled", request_id);
+			Err("Cancelled".to_string())
+		}
 	}
+}
 
-	let second_language_result =
-		translate_with_target(&client, &text, trimmed_language).await?;
-
-	if second_language_result.detected_language == "en" {
-		return Ok(second_language_result);
+#[tauri::command]
+fn cancel_quick_answer(state: tauri::State<'_, RequestAbortState>) -> Result<(), String> {
+	if let Some(request_id) = state.cancel_quick_answer() {
+		log::info!("[quick_answer][id={}] cancel requested", request_id);
 	}
+	Ok(())
+}
 
-	let english_result = translate_with_target(&client, &text, "en").await?;
-	Ok(english_result)
+#[tauri::command]
+fn cancel_translate_text(state: tauri::State<'_, RequestAbortState>) -> Result<(), String> {
+	if let Some(request_id) = state.cancel_translation() {
+		log::info!("[translate_text][id={}] cancel requested", request_id);
+	}
+	Ok(())
 }
 
 // Command to show a toast notification in a separate window
@@ -798,6 +943,8 @@ pub fn run() {
 		.plugin(tauri_plugin_autostart::Builder::new().build())
 		.plugin(tauri_plugin_opener::init());
 
+	builder = builder.manage(RequestAbortState::default());
+
 	// Add nspanel plugin on macOS
 	#[cfg(target_os = "macos")]
 	{
@@ -912,8 +1059,10 @@ pub fn run() {
 		list_models,
 		chat_stream,
 		quick_answer,
+		cancel_quick_answer,
 		show_toast,
 		translate_text,
+		cancel_translate_text,
 		log_settings_update
 	])
 		.run(tauri::generate_context!())
