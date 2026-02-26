@@ -763,13 +763,30 @@ fn cancel_translate_text(state: tauri::State<'_, RequestAbortState>) -> Result<(
 async fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String> {
 	let toast_label = "toast";
 
-	// Get the spotlight window to determine which monitor to show toast on
-	let spotlight_window = app.get_webview_window("spotlight");
+	// Find the monitor where spotlight is displayed by checking which monitor
+	// contains the spotlight window's position. This is more reliable than
+	// current_monitor() on multi-display setups where the window may be
+	// between monitors or already hidden.
+	let target_monitor = (|| -> Option<tauri::Monitor> {
+		let spotlight = app.get_webview_window("spotlight")?;
+		let pos = spotlight.outer_position().ok()?;
+		let monitors = app.available_monitors().ok()?;
 
-	// Get the monitor where spotlight is displayed (or current monitor)
-	let target_monitor = spotlight_window
-		.as_ref()
-		.and_then(|w| w.current_monitor().ok().flatten());
+		// Find the monitor whose bounds contain the spotlight window position
+		for monitor in &monitors {
+			let m_pos = monitor.position();
+			let m_size = monitor.size();
+			let m_right = m_pos.x + m_size.width as i32;
+			let m_bottom = m_pos.y + m_size.height as i32;
+
+			if pos.x >= m_pos.x && pos.x < m_right && pos.y >= m_pos.y && pos.y < m_bottom {
+				return Some(monitor.clone());
+			}
+		}
+
+		// Fallback: use current_monitor() if position-based lookup fails
+		spotlight.current_monitor().ok().flatten()
+	})();
 
 	// Check if toast window already exists
 	if let Some(window) = app.get_webview_window(toast_label) {

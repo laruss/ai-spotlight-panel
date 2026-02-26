@@ -1,7 +1,7 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
 	"productName": "ai-spotlight-panel",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"identifier": "com.konstantin.ai-spotlight-panel",
 	"build": {
 		"beforeDevCommand": "bun run dev",

@@ -1,4 +1,6 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QuickAnswerDropdown } from "./components/QuickAnswerDropdown";
@@ -84,6 +86,23 @@ function App() {
 		setQuery("");
 	};
 
+	const handleInputKeyDown = async (
+		e: React.KeyboardEvent<HTMLInputElement>,
+	) => {
+		if (e.key === "Enter" && translation) {
+			e.preventDefault();
+			try {
+				await writeText(translation.text);
+				await invoke("show_toast", { message: "Translation copied" });
+				setQuery("");
+				const appWindow = getCurrentWindow();
+				await appWindow.hide();
+			} catch (err) {
+				console.error("Failed to copy translation:", err);
+			}
+		}
+	};
+
 	return (
 		<main className="h-full w-full p-2">
 			<div className="spotlight-container flex h-[52px] w-full items-center gap-4 px-5">
@@ -95,6 +114,11 @@ function App() {
 					placeholder="AI Spotlight"
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
+					onKeyDown={handleInputKeyDown}
+					autoCorrect="off"
+					autoCapitalize="off"
+					autoComplete="off"
+					spellCheck={false}
 				/>
 			</div>
 
